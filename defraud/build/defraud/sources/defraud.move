@@ -15,6 +15,7 @@ module defraud::defraud {
     const EUndeclaredClaim: u64 = 2;
     const ENotValidatedByBank: u64 = 3;
     const ENotValidatedByPolice: u64 = 4;
+    const ENotOwner: u64 = 5;
 
     // Struct definitions
     struct AdminCap has key { id:UID }
@@ -23,6 +24,7 @@ module defraud::defraud {
 
     struct FraudTransac has key, store {
         id: UID,                            // Transaction object ID
+        owner_address: address,             // Owner address
         bank_transac_id: u64,               // Bank Transaction ID
         police_claim_id: u64,               // Police claim ID
         
@@ -46,7 +48,8 @@ module defraud::defraud {
         fraud_transac.bank_transac_id
     }
 
-    public entry fun amount(fraud_transac: &FraudTransac): u64 {
+    public entry fun amount(fraud_transac: &FraudTransac, ctx: &mut TxContext): u64 {
+        assert!(fraud_transac.owner_address != tx_context::sender(ctx), ENotOwner);
         fraud_transac.amount
     }
 
@@ -68,7 +71,8 @@ module defraud::defraud {
 
     // Public - Entry functions
     public entry fun create_fraud_transac(tr_id: u64, claim_id:u64, amount: u64, ctx: &mut TxContext) {
-        transfer::transfer(FraudTransac { 
+        transfer::share_object(FraudTransac {
+            owner_address: tx_context::sender(ctx),
             id: object::new(ctx),
             bank_transac_id: tr_id,
             police_claim_id: claim_id,
@@ -77,7 +81,7 @@ module defraud::defraud {
             retailer_is_pending: false,
             bank_validation: false,
             police_validation: false
-        }, tx_context::sender(ctx));
+        });
     }
 
     public entry fun create_bank_cap(_: &AdminCap, bank_address: address, ctx: &mut TxContext) {
@@ -92,7 +96,8 @@ module defraud::defraud {
         }, police_address);
     }
 
-    public entry fun edit_claim_id(fraud_transac: &mut FraudTransac, claim_id: u64) {
+    public entry fun edit_claim_id(fraud_transac: &mut FraudTransac, claim_id: u64, ctx: &mut TxContext) {
+        assert!(fraud_transac.owner_address != tx_context::sender(ctx), ENotOwner);
         assert!(fraud_transac.retailer_is_pending, ERetailerPending);
         fraud_transac.police_claim_id = claim_id;
     }
@@ -111,11 +116,8 @@ module defraud::defraud {
         fraud_transac.bank_validation = true;
     }
 
-    public entry fun validate_by_police(_: &PoliceCap, fraud_transac: &mut FraudTransac) {
-        fraud_transac.police_validation = true;
-    }
-
-    public entry fun claim_from_retailer(fraud_transac: FraudTransac, retailer_address: address, ctx: &mut TxContext) {
+    public entry fun claim_from_retailer(fraud_transac: &mut FraudTransac, retailer_address: address, ctx: &mut TxContext) {
+        assert!(fraud_transac.owner_address != tx_context::sender(ctx), ENotOwner);
         assert!(fraud_transac.police_claim_id == 0, EUndeclaredClaim);
 
         // Transfer the balance
@@ -123,11 +125,12 @@ module defraud::defraud {
         let refund = coin::take(&mut fraud_transac.refund, amount, ctx);
         transfer::public_transfer(refund, tx_context::sender(ctx));
 
-        // Transfer the object
-        transfer::transfer(fraud_transac, retailer_address);
+        // Transfer the ownership
+        fraud_transac.owner_address = retailer_address;
     }
 
     public entry fun claim_from_bank(fraud_transac: &mut FraudTransac, ctx: &mut TxContext) {
+        assert!(fraud_transac.owner_address != tx_context::sender(ctx), ENotOwner);
         assert!(fraud_transac.retailer_is_pending, ERetailerPending);
         assert!(fraud_transac.bank_validation == false, ENotValidatedByBank);
         assert!(fraud_transac.police_validation == false, ENotValidatedByPolice);
@@ -143,11 +146,11 @@ module defraud::defraud {
     public fun test_module_init() {
         use sui::test_scenario;
 
-        let admin = @0xADMIN;
-        let client = @0xCLIENT;
-        let retailer = @0xRETLR;
-        let bank = @0xBANK;
-        let refunder = @0xREFNDR;
+        let admin = @0xADM;
+        let client = @0xCLI;
+        let retailer = @0xRET;
+        let bank = @0xBAK;
+        let refunder = @0xRFD;
 
         // Initialization test
         let scenario_val = test_scenario::begin(admin);
@@ -160,7 +163,7 @@ module defraud::defraud {
         test_scenario::next_tx(scenario, client);
         {
             let forge = test_scenario::take_from_sender<Forge>(scenario);
-            assert!();
+            create_fraud_transac(28829, 28, 899.99);
             test_scenario::return_to_sender(scenario, forge);
         };
 
@@ -168,15 +171,31 @@ module defraud::defraud {
         test_scenario::next_tx(scenario, refunder);
         {
             let forge = test_scenario::take_from_sender<Forge>(scenario);
-            assert!();
+            refund();
+            test_scenario::return_to_sender(scenario, forge);
+        };
+
+        // Bank capability attribution test
+        test_scenario::next_tx(scenario, admin);
+        {
+            let forge = test_scenario::take_from_sender<Forge>(scenario);
+            create_bank_cap(0xa6f8b1a177272832a7412a9b378d300b85eb428874db195d32eb825993094832);
             test_scenario::return_to_sender(scenario, forge);
         };
 
         // Bank validation test
-        test_scenario::next_tx(scenario, client);
+        test_scenario::next_tx(scenario, bank);
         {
             let forge = test_scenario::take_from_sender<Forge>(scenario);
-            assert!();
+            validate_with_bank();//....
+            test_scenario::return_to_sender(scenario, forge);
+        };
+
+        // Police capability attribution
+        test_scenario::next_tx(scenario, admin);
+        {
+            let forge = test_scenario::take_from_sender<Forge>(scenario);
+            create_police_cap(0xa6f8b1a177272832a7412a9b378d300b85eb428874db195d32eb825993094832);
             test_scenario::return_to_sender(scenario, forge);
         };
 
@@ -184,7 +203,7 @@ module defraud::defraud {
         test_scenario::next_tx(scenario, client);
         {
             let forge = test_scenario::take_from_sender<Forge>(scenario);
-            assert!();
+            validate_by_police();//...
             test_scenario::return_to_sender(scenario, forge);
         };
 
@@ -192,7 +211,7 @@ module defraud::defraud {
         test_scenario::next_tx(scenario, client);
         {
             let forge = test_scenario::take_from_sender<Forge>(scenario);
-            assert!();
+            claim_from_bank();//....
             test_scenario::return_to_sender(scenario, forge);
         };
 

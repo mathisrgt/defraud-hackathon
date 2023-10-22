@@ -116,6 +116,10 @@ module defraud::defraud {
         fraud_transac.bank_validation = true;
     }
 
+    public entry fun validate_by_police(_: &PoliceCap, fraud_transac: &mut FraudTransac) {
+        fraud_transac.police_validation = true;
+    }
+
     public entry fun claim_from_retailer(fraud_transac: &mut FraudTransac, retailer_address: address, ctx: &mut TxContext) {
         assert!(fraud_transac.owner_address != tx_context::sender(ctx), ENotOwner);
         assert!(fraud_transac.police_claim_id == 0, EUndeclaredClaim);
